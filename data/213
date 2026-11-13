@@ -1,0 +1,399 @@
+# 开发前期准备工作清单｜Google 开发者权限申请流程
+
+> **适用项目**：Mobile Hibachi 4U · Google Ads + GA4 广告数据分析工具
+> **依据**：Google 官方现行文档（核对日期 **2026-11-09**）
+> **配套**：`会议方案.md`（客户汇报）、`mobile-hibachi-4u-ads-report.html`（报告页原型）、《服务内容.docx》（合同附件）
+> **文档性质**：内部技术执行手册；§0 与 §5 可单独打印给客户
+
+---
+
+## 0. 结论先行（TL;DR）
+
+### 0.1 最重要的规则变化
+
+> **Google Ads API Developer Token 已于 2026-09-09 停用。** API 访问权限不再由经理账号里的「API Center / 开发者令牌」决定，而是**按 Google Cloud 项目分级管理**。
+> 影响：不再需要申请 Developer Token、不再强制要求 MCC 经理账号、`developer-token` 请求头被忽略、配额挂在 Cloud 项目上。
+
+《服务内容》第 6 条仍写「Google Ads API Developer Token 生产访问审批」，**措辞需更新**（见 §9）。
+
+### 0.2 推荐接入路径（服务账号，单一凭据打通两侧）
+
+```
+老板 Google 账号
+   └─ 创建 Cloud 项目（mh4u-ads-analytics）
+        ├─ 启用 Google Ads API + Analytics Data API
+        ├─ 申请 Explorer 访问级别（只读 Reporting 用途）
+        └─ 创建 1 个服务账号（SA）+ JSON Key
+             ├─ SA 邮箱 → Google Ads 账号「Admin → Access and security」加为 Read only
+             └─ SA 邮箱 → GA4「Property Access Management」加为 Viewer
+                  └─ 服务端定时任务用同一份 Key 拉取两侧数据 → 标准化 → 入库 → 报告页
+```
+
+**为什么选服务账号**：不需要老板交出密码、不需要长期 refresh token、不会因老板改密 / 离职 / 撤销授权而失效、可随时在后台移除、一份凭据同时服务 Ads 与 GA4。
+
+### 0.3 老板（甲方）最小动作清单
+
+| # | 动作 | 位置 | 耗时 |
+| --- | --- | --- | --- |
+| 1 | 创建 Cloud 项目并把我方加为 Owner（或授权我方代办） | Cloud Console | 5 分钟 |
+| 2 | 在 Google Ads API「概览」页点击申请 Explorer | Cloud Console | 1 分钟 |
+| 3 | 把服务账号邮箱加为 Google Ads 账号 **Read only** 用户 | Ads → Admin → Access and security | 2 分钟 |
+| 4 | 把同一邮箱加为 GA4 属性 **Viewer** | GA4 → Admin → Property Access Management | 2 分钟 |
+| 5 | 提供 Customer ID（10 位）、Property ID（9 位）、账户时区与币种 | 邮件 | 2 分钟 |
+
+> 若通过经理账号（MCC）访问子账号，额外提供 **MCC ID**，并在请求中带 `login-customer-id`（去横线）。
+
+### 0.4 时间线（权限阶段）
+
+| 日 | 事项 | 责任 |
+| --- | --- | --- |
+| D0 | 会议确认口径、启动权限申请、收集 ID | 双方 |
+| D0–D1 | 建 Cloud 项目、启用 API、申请 Explorer、创建 SA | 我方（需老板账号授权） |
+| D1–D2 | 两侧白名单加好，凭据加密入库 | 客户 + 我方 |
+| D2–D3 | 首个调用验证（Ads / GA4）、字段映射、口径校验 | 我方 |
+| **D3 = T0** | **权限与材料齐备，20 个工作日交付周期起算** | 双方书面确认 |
+
+> Explorer 多数情况自动批准；若需 Standard（人工审核约 10 个工作日），T0 相应顺延，审批周期不由我方保证。
+
+---
+
+## 1. 四个实体别搞混（最容易出错的地方）
+
+| 实体 | 是什么 | 在哪里拿 | 谁提供 | 用途 |
+| --- | --- | --- | --- | --- |
+| **Google 账号（老板）** | 登录身份 | — | 甲方 | 创建 / 拥有 Cloud 项目，具备 Ads 与 GA4 管理员权限 |
+| **Google Cloud 项目** | API 权限与配额的载体 | console.cloud.google.com | 甲方创建 / 我方代办 | 启用 API、申请访问级别、创建服务账号 |
+| **Google Ads 客户账号** | 投放广告的账号 | Ads 右上角 **Customer ID**（10 位，去横线） | 甲方 | GAQL 查询目标；SA 需被加为该账号用户 |
+| **GA4 属性** | 网站数据流 | GA4 Admin → Property Details → **Property ID**（9 位数字） | 甲方 | runReport 的 `properties/{id}` |
+
+### 常见误区
+
+1. ❌ 「去 Ads 的 API Center 申请 Developer Token」→ **已停用**，改为 Cloud 项目「Google Ads API 概览」页申请访问级别。
+2. ❌ 「必须有 MCC 经理账号」→ **不再强制**；仅在通过经理账号访问子账号时才需要 `login-customer-id`。
+3. ❌ 「G-XXXXXXX 就是 Property ID」→ 那是**衡量 ID**（前端埋点用），Property ID 是 9 位纯数字。
+4. ❌ 「Cloud 项目里给 SA 加 IAM 角色就能读 GA4」→ GA4 权限在 **Analytics 后台的 Property Access Management**，不在 GCP IAM。
+5. ❌ 「同意屏幕选 Testing 就行」→ Testing 状态下 refresh token **约 7 天失效**；内部用建议 Workspace 选 Internal，或发布为 In production（走服务账号路径可完全避开）。
+6. ❌ 「adwords scope 是只读的」→ 该 scope 本身**不是只读**，真正的权限边界靠 Ads 账号里的用户角色（Read only）与只用查询类 GAQL 保证。
+
+---
+
+## 2. API 访问级别与用途
+
+### 2.1 四级访问级别
+
+| 级别 | 可访问账号 | 每日操作上限（生产账号） | 如何获得 | 审核时长 |
+| --- | --- | --- | --- | --- |
+| **Test** | 仅测试账号 | —（测试账号 15,000） | 启用 Google Ads API 后自动获得 | 即时 |
+| **Explorer** | 测试 + 生产账号 | **2,880 次 / 天** | 概览页「Upgrade access level」→ 申请 Explorer | 多数自动批准 |
+| **Basic** | 测试 + 生产账号 | 15,000 次 / 天 | 需先完成项目**品牌验证**，再申请 | 视情况 |
+| **Standard** | 测试 + 生产账号 | 不限 | 人工审核，需说明工具功能、目标受众，外部工具可能需提供演示登录、满足最低功能要求 | 约 10 个工作日 |
+
+### 2.2 本项目申请哪一级：**Explorer**
+
+- 用途是**只读报表**：只调用 `GoogleAdsService.Search` / `SearchStream` 类查询，不创建 / 修改广告。
+- 配额测算：每日同步约 5–10 次 Ads GAQL 查询 + 5–10 次 GA4 `runReport`，合计 **< 30 次/天**，远低于 2,880。
+- 声明「允许的用途」时选 **Reporting**（仅统计信息 / 只读调用）。
+- Explorer 的限制服务（账号创建、用户管理 API、关键词规划、结算付款等）本项目**都不需要**；注意「通过 Ads 后台 UI 手动添加服务账号用户」不是 API 调用，不受该限制。
+- 触发升级的条件：未来要多客户账号批量拉取、或调用频次显著上升 → 先完成品牌验证再升 Basic。
+
+### 2.3 配额注意事项
+
+- 配额现在**挂在 Cloud 项目**上，共用同一 OAuth 客户端 / 项目的多个工具会共享配额，不要把这个项目复用到其他产品。
+- GA4 Data API 标准版约 **1,250 tokens / 小时 / 属性**；用 `batchRunReports`（一次最多 5 个报告）与较宽日期范围减少调用。
+- 所有级别都受系统级速率限制，需实现 429 / 5xx 指数退避重试。
+
+---
+
+## 3. 完整执行流程（可勾选）
+
+### 阶段 A｜甲方信息收集（D0）
+
+- [ ] Google Ads **Customer ID**（10 位，去横线）
+- [ ] 是否通过 MCC 访问 → 若是，收集 **MCC / login-customer-id**
+- [ ] GA4 **Property ID**（9 位数字）
+- [ ] 账户**时区**与**币种**（影响日切与金额口径）
+- [ ] 老板账号是否具备 Ads 管理员 + GA4 管理员权限
+- [ ] 现有转化事件清单、UTM 命名规范、Ads ↔ GA4 是否已关联
+- [ ] 转化定义与转化价值口径（见 `会议方案.md` §6 决策 1–4）
+
+### 阶段 B｜创建 Cloud 项目并启用 API（D0–D1）
+
+1. 老板账号登录 `console.cloud.google.com` → 新建项目 `mh4u-ads-analytics`；把我方账号加为 **Owner / Editor**（或由我方代建后转交）。
+2. `APIs & Services → Library` 启用：
+   - `Google Ads API`
+   - `Analytics Data API`（`analyticsdata.googleapis.com`）
+3. 记录 **Project ID / Project Number**。
+
+> 两个 API 的调用本身免费；Cloud 项目是否需要绑定结算账号以控制台当期政策为准，启用时若提示按引导完成即可。
+
+### 阶段 C｜申请 Explorer 访问级别（D1）
+
+1. 进入该项目的 **Google Ads API「概览」页**（APIs & Services → Google Ads API → Overview）。
+2. 确认当前级别为 **Test** → 展开 **Upgrade access level** → 下一级显示 **Explorer** → 点击 **Apply for access**。
+3. 多数情况自动升级；刷新页面确认状态变为 Explorer。
+4. 若未自动批准：按官方 Quick start 用**测试账号**先完成联调，同时提交申请，不阻塞开发。
+
+> ⚠️ 未升级到 Explorer 时对生产账号调用会返回 `CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION`（旧版本为 `DEVELOPER_TOKEN_NOT_APPROVED`）。
+
+### 阶段 D｜创建服务账号并完成两侧白名单（D1–D2）★ 最关键
+
+**D-1 创建 SA 与密钥**
+
+1. `IAM & Admin → Service Accounts → Create Service Account`，命名如 `mh4u-ads-reader`。
+2. 进入该 SA → `Keys → Add key → Create new key → JSON`，下载 `credentials.json`。
+3. 记下 **SA 邮箱**：`mh4u-ads-reader@<project-id>.iam.gserviceaccount.com`。
+4. 该 JSON 是唯一副本，**立即存入密钥管理，禁止提交到代码库**（`.gitignore` 加 `*-sa-*.json`）。
+
+**D-2 Google Ads 侧授权**
+
+1. 老板以管理员登录 Google Ads → `Admin → Access and security → Users`。
+2. 添加用户，邮箱填 **SA 邮箱**，访问级别选 **Read only**（不要给 Admin / Standard）。
+3. 保存并确认状态为已接受（服务账号不支持 Email-only 级别）。
+
+**D-3 GA4 侧授权**
+
+1. 老板登录 GA4 → `Admin → Property Access Management`。
+2. 添加用户，粘贴同一 **SA 邮箱**，角色 **Viewer**（属性级，不要给账号级）。
+3. 确认是**目标 Property**，不是同账号下的其他属性。
+
+**D-4 验证权限最小化**
+
+- [ ] 服务账号仅被授予 Read only / Viewer
+- [ ] 未在 GCP IAM 里授予多余角色
+- [ ] 未开启任何写类 API
+
+### 阶段 E｜凭据加密与运行时配置（D2）
+
+服务端环境变量（**前端不接触任何密钥**）：
+
+```bash
+GOOGLE_APPLICATION_CREDENTIALS=/secure/path/mh4u-ads-reader.json  # SA Key
+GOOGLE_ADS_CUSTOMER_ID=1234567890                                  # 去横线
+GOOGLE_ADS_LOGIN_CUSTOMER_ID=                                      # 仅 MCC 场景，否则留空
+GA4_PROPERTY_ID=123456789
+ADS_API_VERSION=vXX                                                 # 取当前受支持版本，见官方 REST 参考
+TZ=America/New_York                                                 # 以客户账户时区为准
+```
+
+- [ ] Key 存入 Secrets Manager / 环境变量，静态加密，访问审计开启
+- [ ] **不要**配置 `GOOGLE_ADS_DEVELOPER_TOKEN`（已停用；旧脚本若仍要求，可留空，请求头会被忽略）
+- [ ] 配置密钥轮换与「权限被移除」的告警
+- [ ] 定时任务设错峰（避开整点）、失败重试与退避
+
+### 阶段 F｜首个 API 调用验证（D2–D3）
+
+**F-1 Ads：列出可访问客户**
+
+```bash
+curl -X GET \
+  "https://googleads.googleapis.com/${ADS_API_VERSION}/customers:listAccessibleCustomers" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "login-customer-id: ${GOOGLE_ADS_LOGIN_CUSTOMER_ID}"   # 仅通过 MCC 访问时需要
+```
+
+**F-2 Ads：只读 GAQL 查询（近 30 天广告系列表现）**
+
+```sql
+SELECT
+  campaign.id,
+  campaign.name,
+  segments.date,
+  metrics.impressions,
+  metrics.clicks,
+  metrics.cost_micros,
+  metrics.conversions,
+  metrics.conversions_value,
+  metrics.ctr,
+  metrics.average_cpc
+FROM campaign
+WHERE segments.date DURING LAST_30_DAYS
+ORDER BY segments.date DESC
+```
+
+> `cost_micros` 需 ÷ 1,000,000 转成账户币种；`conversions_value` 与 GA4 收入口径需在报告上分别标注。
+
+**F-3 GA4：runReport（服务账号凭据）**
+
+```python
+import os
+from google.analytics.data_v1beta import BetaAnalyticsDataClient
+from google.analytics.data_v1beta.types import RunReportRequest, DateRange, Dimension, Metric
+
+client = BetaAnalyticsDataClient()  # 自动读取 GOOGLE_APPLICATION_CREDENTIALS
+req = RunReportRequest(
+    property=f"properties/{os.environ['GA4_PROPERTY_ID']}",
+    date_ranges=[DateRange(start_date="30daysAgo", end_date="yesterday")],  # 排除当日，避开处理延迟
+    dimensions=[Dimension(name="date"), Dimension(name="sessionDefaultChannelGroup")],
+    metrics=[Metric(name="sessions"), Metric(name="activeUsers"),
+             Metric(name="keyEvents"), Metric(name="totalRevenue")],
+)
+for row in client.run_report(req).rows:
+    print([v.value for v in row.dimension_values], [v.value for v in row.metric_values])
+```
+
+**F-4 校验清单**
+
+- [ ] `listAccessibleCustomers` 返回目标 Customer ID
+- [ ] GAQL 返回非空结果，且金额换算正确
+- [ ] GA4 返回非空结果；用 `checkCompatibility` / `getMetadata` 校验所有维度 × 指标组合
+- [ ] 同一日期两侧数据能按 `date + campaign / UTM` 对齐，差异有口径说明
+- [ ] 输出《字段映射表》与《口径说明》，作为后续验收附件
+
+### 阶段 G｜同步与标准化（D3 起）
+
+- [ ] 定时任务：每日一次（建议客户时区 06:00），拉取 T−1 数据，排除当日
+- [ ] 日期范围一次覆盖 30–90 天，支持回溯补数（GA4 回补窗口）
+- [ ] 统一币种、时区、日切；金额由 micros 转换
+- [ ] 指标计算：CTR / CPC / CPA / CVR / ROAS / 参与度 / 环比 / 同比
+- [ ] 入库前保留原始响应快照，便于对账
+- [ ] 限流退避、失败告警、同步状态回写报告页「最近同步」
+
+### 阶段 H｜联调验收（交付前）
+
+- [ ] 真实数据替换示例数据，报告页 8 个分区全部有值
+- [ ] 7 / 30 / 90 天切换、CSV 导出、打印导出均正常
+- [ ] 异常规则用真实阈值跑一遍
+- [ ] 按《服务内容》第 5 条「双方确认的需求范围」逐项验收
+
+---
+
+## 4. 备选路径：OAuth 用户授权（何时才用）
+
+| 对比 | 服务账号（推荐） | OAuth 用户授权 |
+| --- | --- | --- |
+| 凭据 | SA JSON Key | Client ID / Secret + Refresh Token |
+| 是否依赖老板个人账号 | 否 | 是 |
+| 失效风险 | 低（撤销白名单才失效） | 改密 / 离职 / 撤销授权 / Testing 状态 7 天过期 |
+| 适用场景 | 单租户、服务端定时任务 | 多客户账号、需要终端用户各自登录授权 |
+| 本项目 | ✅ 主选 | 仅在客户要求「登录自己的 Google 查看」时启用 |
+
+若确需 OAuth 用户路径：
+
+1. `APIs & Services → OAuth consent screen`：Workspace 组织选 **Internal**（无需 Google 验证）；个人 Gmail 只能选 **External** 并发布为 **In production**，`adwords` 属敏感 / 受限 scope，可能需要应用验证。
+2. 添加 scope：`https://www.googleapis.com/auth/adwords`（Ads）、`https://www.googleapis.com/auth/analytics.readonly`（GA4）。
+3. `Credentials → Create credentials → OAuth client ID → Web application`，配置服务端回调 URL。
+4. 授权时带 `access_type=offline` + `prompt=consent` 获取 **refresh token**；用 code 换 token 后立即加密存储。
+5. 服务端用 `grant_type=refresh_token` 换 access token 调用 API。
+6. 通过 MCC 访问时，请求头补 `login-customer-id`。
+
+> ⚠️ 同意屏幕处于 **Testing** 时，refresh token 约 7 天失效；且需把授权账号加入测试用户列表。这是内部工具「跑了一周突然 401」的最常见原因。
+
+---
+
+## 5. 甲方配合清单（可单独打印给客户）
+
+**需要您提供**
+
+- Google Ads Customer ID（10 位数字，去掉横线）
+- GA4 Property ID（9 位数字，不是 G-XXXX 衡量 ID）
+- 账户时区、币种
+- 若通过经理账号管理：MCC ID
+- 现有转化事件清单、UTM 规则、Ads 与 GA4 是否已关联
+
+**需要您操作**（约 10 分钟）
+
+1. 用您的 Google 账号创建 Cloud 项目，或授权我方代办
+2. 在 Google Ads API 概览页申请 Explorer 访问级别
+3. 把服务账号邮箱加为 Google Ads 账号 **Read only**
+4. 把同一邮箱加为 GA4 属性 **Viewer**
+
+**不需要您提供**
+
+- ❌ Google 账号密码
+- ❌ Developer Token（已停用）
+- ❌ 长期有效的个人授权令牌
+- ❌ 广告投放的修改 / 管理员权限
+
+---
+
+## 6. 常见失败与排查
+
+| 现象 / 错误码 | 原因 | 处理 |
+| --- | --- | --- |
+| `CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION` | Cloud 项目仍是 Test 级别 | 概览页申请 Explorer；期间用测试账号联调 |
+| `DEVELOPER_TOKEN_NOT_APPROVED`（旧脚本） | 沿用 2026-09 之前的配置 | 移除 token 依赖，确认 OAuth 凭据属于已升级的 Cloud 项目 |
+| `USER_PERMISSION_DENIED` | SA 邮箱未加入 Ads 账号；或经 MCC 访问却缺 `login-customer-id` | 检查 Admin → Access and security；按需补 header（去横线） |
+| `403 PermissionDenied`（GA4） | SA 邮箱未加到 **GA4 属性级**权限 | Property Access Management 加 Viewer；账号级授权不算 |
+| `403 Service Disabled` | 未启用对应 API | 启用 `analyticsdata.googleapis.com` / Google Ads API |
+| `invalid_grant` / 刷新令牌失效 | OAuth 同意屏幕仍在 Testing；账号改密或撤销授权 | 发布为 In production 或改走服务账号路径 |
+| `RESOURCE_EXHAUSTED` / 429 | 项目配额或系统速率限制 | 指数退避、合并查询、错峰、必要时升 Basic |
+| `INVALID_ARGUMENT` | 维度 × 指标组合不兼容 | `checkCompatibility` / `getMetadata` 预校验 |
+| 查询返回空数组 | 当日数据未处理完、日期范围错误、UTM / 转化事件未配置、测试账号无广告系列 | 用 `yesterday` 作结束日；与客户核对埋点；测试账号先建一个 campaign |
+| Ads 与 GA4 数字对不上 | 归因模型、统计时点、转化定义不同 | 不做人为抹平；在报告标注口径并提供对照表 |
+| 金额差 1,000,000 倍 | `cost_micros` 未换算 | ÷ 1,000,000 |
+
+---
+
+## 7. 接口边界与限制（写进设计方案）
+
+| 项 | 说明 |
+| --- | --- |
+| 数据延迟 | GA4 有 24–48 小时处理延迟；实时数据仅覆盖近 30 分钟，主报表按 T−1 更新 |
+| 历史数据 | GA4 标准版约 14 个月；建议开通免费 BigQuery 导出做长期留存 |
+| 配额 | Explorer 2,880 次操作/天（生产账号）；GA4 约 1,250 tokens/小时/属性 |
+| 兼容性 | 维度与指标有兼容矩阵，上线前批量校验 |
+| 归因 | Ads 与 GA4 口径不同，报告需注明「按点击时间 / 按转化时间」 |
+| 抽样 / 阈值 | 关注响应中的 `subjectToThresholding`、`samplingMetadatas`，避免静默缺数 |
+| 写操作 | 本期只读。离线转化回传、自动调价、广告创建均不在范围内 |
+
+---
+
+## 8. 其他开发前期准备（非权限，但同一阶段要做）
+
+| # | 事项 | 产出 |
+| --- | --- | --- |
+| 1 | 确认部署方式与环境变量管理（自有服务器 / 云函数 / Worker） | 部署方案 |
+| 2 | 数据表设计（原始响应快照 + 标准化日表 + 指标汇总） | Schema |
+| 3 | 字段映射表（GAQL 字段 ↔ GA4 字段 ↔ 报告页指标） | 《字段映射表》 |
+| 4 | 指标口径文档（CTR / CPC / CPA / CVR / ROAS / 环比同比公式） | 《口径说明》 |
+| 5 | 异常规则配置表（指标、条件、阈值、通知方式） | 规则配置 v1 |
+| 6 | 报告模板（周报 / 月报 / 转化链路 / 异常分析）与导出格式 | 模板 |
+| 7 | 测试账号与 mock 数据（用于审批未下来期间联调） | 测试用例 |
+| 8 | 监控与告警（同步失败、凭据失效、配额告警） | 告警配置 |
+
+---
+
+## 9. 合同与商务需同步更新的两处
+
+| 位置 | 现表述 | 建议改为 | 理由 |
+| --- | --- | --- | --- |
+| 《服务内容》第 6 条 | 「Google Ads API **Developer Token** 生产访问审批」 | 「**Google Cloud 项目 API 访问权限级别**（Test / Explorer / Basic / Standard）申请」 | 开发者令牌 2026-09-09 停用，API Center 不再办理 |
+| 第 5 / 6 条 交付周期 | 「20 个工作日」 | 补充「以权限批准及甲方材料齐备之日（T0）起算；材料延迟相应顺延」 | 与原第 6 条顺延条款保持一致，避免验收争议 |
+
+**保留不变**：审批结果与周期由第三方平台决定、乙方仅提供技术协助；甲方账号 / 数据合法取得；API 限流、接口调整、GA4 配置问题等非乙方原因的免责；数据归属条款。
+
+---
+
+## 10. 本阶段输出物与验收标准
+
+| 输出物 | 完成判定 |
+| --- | --- |
+| Cloud 项目（Explorer）+ 服务账号 | 概览页显示 Explorer；SA 邮箱已加入两侧白名单 |
+| 加密凭据与环境变量 | 密钥不在代码库、不在前端；可轮换、可撤销 |
+| 首个调用验证报告 | Ads 与 GA4 各一次成功返回，金额换算正确 |
+| 《字段映射表》《口径说明》 | 双方书面确认（对应会议 §6 决策 1–4） |
+| 每日同步任务 | 连续 3 天成功、失败可重试、状态回写报告页 |
+| 合同附件更新 | 第 6 条措辞与 T0 起算补充完成 |
+
+---
+
+## 11. 待同步事项 【内部】
+
+- 已交付的 `mobile-hibachi-4u-ads-report.html` 中「数据对接流程」章节目前按 **OAuth 用户授权**路径撰写（第 5 步 refresh token、第 6 步 GA4 服务账号），与本文档推荐的**服务账号单一凭据路径**存在差异。
+- 建议下一轮把该章节同步为：服务账号为主路径、OAuth 用户授权为备选，并更新「接口边界」中「老板账号改密导致 refresh token 失效」的表述。
+- 同步前请勿把报告页的「数据与接入」章节单独截给客户作为权限申请依据，以本文档 §0 / §5 为准。
+
+---
+
+## 附：官方文档索引
+
+| 主题 | 链接 |
+| --- | --- |
+| 访问权限级别和允许的用途（含停用说明） | https://developers.google.com/google-ads/api/docs/access-levels |
+| 快速入门 / 发出第一个调用（现行服务账号流程） | https://developers.google.com/google-ads/api/docs/get-started/make-first-call |
+| 配置 Cloud 项目与 OAuth 同意屏幕 | https://developers.google.com/google-ads/api/docs/oauth/cloud-project |
+| 授权与 HTTP 标头（scope、login-customer-id） | https://developers.google.com/google-ads/api/docs/rest/auth |
+| GA4 Data API 架构（指标 / 维度清单） | https://developers.google.com/analytics/devguides/reporting/data/v1/api-schema |
+| GA4 Data API 快速入门 | https://developers.google.com/analytics/devguides/reporting/data/v1/quickstart-client-libraries |
+
+> 本文档规则核对日期为 2026-11-09；Google 政策与 API 版本会更新，实施当天请以上述官方页面为准。

@@ -1,0 +1,804 @@
+/*! Minimalist Web Notepad | https://github.com/pereorga/minimalist-web-notepad */
+/*! 前端表现层重制：三态视图 / 分屏 / Markdown 排版 / 响应式 / 明暗主题 */
+
+/* ============================================================
+   1. Design tokens
+   暖中性画布（Notion）+ shadow-as-border & mono 技术标签（Vercel）
+   ============================================================ */
+:root {
+  color-scheme: light;
+
+  --canvas:          #f6f5f4;
+  --surface:         #ffffff;
+  --surface-subtle:  #faf9f7;
+  --editor-surface:  #fdfcfb;
+  --text:            rgba(0, 0, 0, .88);
+  --text-2:          rgba(0, 0, 0, .60);
+  --text-3:          rgba(0, 0, 0, .38);
+  --line:            rgba(0, 0, 0, .10);
+  --line-strong:     rgba(0, 0, 0, .20);
+  --accent:          #147d74;
+  --accent-text:     #0f6a62;
+  --accent-soft:     #e6f3f1;
+  --selection:       rgba(20, 125, 116, .18);
+  --code-bg:         #f0efec;
+  --pre-bg:          #202725;
+  --pre-text:        #e9efed;
+  --pre-line:        rgba(255, 255, 255, .07);
+
+  --shadow-ring:     0 0 0 1px rgba(0, 0, 0, .07);
+  --shadow-pane:     0 0 0 1px rgba(0, 0, 0, .06), 0 1px 2px rgba(0, 0, 0, .03);
+  --shadow-float:    rgba(0, 0, 0, .04) 0 4px 18px,
+                     rgba(0, 0, 0, .027) 0 2px 8px,
+                     rgba(0, 0, 0, .02) 0 1px 3px,
+                     rgba(0, 0, 0, .01) 0 0 1px;
+
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+          "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Cascadia Code",
+          Menlo, Consolas, "Liberation Mono", monospace;
+
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
+  --split: 50%;
+  --prose-width: 42em; /* 正文阅读宽度；纯预览模式单独放宽 */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --canvas:          #1e201f;
+    --surface:         #262927;
+    --surface-subtle:  #2c302e;
+    --editor-surface:  #242725;
+    --text:            rgba(255, 255, 255, .85);
+    --text-2:          rgba(255, 255, 255, .62);
+    --text-3:          rgba(255, 255, 255, .40);
+    --line:            rgba(255, 255, 255, .11);
+    --line-strong:     rgba(255, 255, 255, .24);
+    --accent:          #6fd0c4;
+    --accent-text:     #8fe0d4;
+    --accent-soft:     rgba(111, 208, 196, .12);
+    --selection:       rgba(111, 208, 196, .26);
+    --code-bg:         #313634;
+    --pre-bg:          #161a18;
+    --pre-text:        #e9efed;
+    --pre-line:        rgba(255, 255, 255, .06);
+
+    --shadow-ring:     0 0 0 1px rgba(255, 255, 255, .09);
+    --shadow-pane:     0 0 0 1px rgba(255, 255, 255, .07), 0 1px 2px rgba(0, 0, 0, .18);
+    --shadow-float:    rgba(0, 0, 0, .24) 0 4px 18px,
+                       rgba(0, 0, 0, .18) 0 2px 8px,
+                       rgba(0, 0, 0, .14) 0 1px 3px;
+  }
+}
+
+/* ============================================================
+   2. Base
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* 全局兜底：任何内容块都不允许把页面顶出横向滚动条；
+     各宽内容（表格 / 代码块 / 长链接）已在自身内部消化溢出 */
+  overflow-x: hidden;
+  overflow-x: clip;
+}
+
+::selection { background: var(--selection); color: var(--text); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.app {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* 细窄滚动条：编辑细节（表格滚动容器与代码块共用同一套视觉） */
+#content, .markdown, pre, .table-scroll { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+#content::-webkit-scrollbar, .markdown::-webkit-scrollbar,
+pre::-webkit-scrollbar, .table-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+#content::-webkit-scrollbar-thumb, .markdown::-webkit-scrollbar-thumb,
+pre::-webkit-scrollbar-thumb, .table-scroll::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+@media (hover: hover) and (pointer: fine) {
+  #content::-webkit-scrollbar-thumb:hover, .markdown::-webkit-scrollbar-thumb:hover,
+  .table-scroll::-webkit-scrollbar-thumb:hover { background-color: var(--accent); }
+}
+
+/* ============================================================
+   3. Topbar — 与画布同材质，不做悬浮工具条
+   ============================================================ */
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 10px 18px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
+  overflow: visible;
+  height: auto;
+  margin: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+}
+.brand-mark { width: 20px; height: 20px; flex: none; }
+.brand-mark .accent-line { stroke: var(--accent); }
+.brand-word {
+  font: 600 14px/1 var(--mono);
+  letter-spacing: .06em;
+  color: var(--text);
+}
+.brand-slash { color: var(--text-3); font: 400 14px/1 var(--mono); }
+.note-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 13px/1.4 var(--mono);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 分段控件：互斥单选 + 所有选项常驻可见，故不用 dropdown / toggle */
+.view-switch {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-ring);
+}
+.view-btn {
+  position: relative;
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 18px;
+  background: transparent;
+  color: var(--text-2);
+  font: 500 13px/1 var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms var(--ease-out), background-color 160ms var(--ease-out),
+              box-shadow 160ms var(--ease-out), transform 120ms var(--ease-out);
+}
+.view-btn[aria-pressed="true"] {
+  color: var(--accent-text);
+  font-weight: 600;
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--selection), 0 1px 2px rgba(0, 0, 0, .04);
+}
+.view-btn:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) {
+  .view-btn:not([aria-pressed="true"]):hover { color: var(--text); background: var(--surface-subtle); }
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-width: 0;
+}
+.btn {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 16px;
+  background: var(--surface);
+  color: var(--text);
+  font: 500 13px/1 var(--sans);
+  cursor: pointer;
+  box-shadow: var(--shadow-ring);
+  transition: background-color 160ms var(--ease-out), color 160ms var(--ease-out),
+              box-shadow 160ms var(--ease-out), transform 120ms var(--ease-out);
+}
+.btn:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover { color: var(--accent-text); box-shadow: 0 0 0 1px var(--accent); }
+}
+
+/* Toast：只在用户触发后出现，不做常驻系统自言自语 */
+.message-alert {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  z-index: 20;
+  display: none;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  opacity: 0;
+  transform: translate(-50%, -8px);
+  pointer-events: none;
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+}
+.message-alert.is-visible {
+  display: inline-flex;
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.message-alert strong { color: var(--accent-text); font-weight: 600; }
+.message-success { border-color: var(--selection); }
+.message-warning, .message-danger { border-color: var(--line); }
+
+/* 网络请求失败气泡：复用 .message-alert 的定位、过渡与形状，只补危险态配色 */
+.message-alert.message-danger {
+  --toast-accent: #b42318;
+  border-color: rgba(180, 35, 24, .38);
+}
+.message-alert.message-danger strong { color: var(--toast-accent); }
+@media (prefers-color-scheme: dark) {
+  .message-alert.message-danger {
+    --toast-accent: #ff9b91;
+    border-color: rgba(255, 155, 145, .42);
+  }
+}
+
+/* ============================================================
+   4. Workspace — 三态视图与可拖拽中缝
+   ============================================================ */
+.container {
+  position: static;
+  display: grid;
+  grid-template-columns: minmax(0, var(--split)) 10px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  min-height: 0;
+  padding: 12px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  margin: 0;
+  flex-wrap: nowrap;
+  justify-content: initial;
+}
+
+.pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-pane);
+}
+
+/* 纯预览的标题导航：绝对定位于预览面板左侧留白，不参与正文布局、不挤压内容。
+   hidden 属性由 JS 控制（仅纯预览且左侧留白足够时出现） */
+.pane-preview { position: relative; }
+
+.toc {
+  position: absolute;
+  z-index: 5;
+  top: 46px;                 /* 面板头 30px + 16px */
+  left: 16px;
+  width: var(--toc-w, 200px);
+  max-height: calc(100% - 62px);
+  padding: 8px 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+.toc::-webkit-scrollbar { width: 8px; height: 8px; }
+.toc::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+.toc-title {
+  padding: 4px 10px 8px;
+  color: var(--text-3);
+  font: 600 10px/1 var(--mono);
+  letter-spacing: .12em;
+}
+.toc-item {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 5px 5px 0;
+  background: transparent;
+  color: var(--text-2);
+  font: 400 12px/1.5 var(--sans);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: color 160ms var(--ease-out), background-color 160ms var(--ease-out);
+}
+.toc-item[data-level="2"] { padding-left: 20px; }
+.toc-item[data-level="3"] { padding-left: 30px; }
+@media (hover: hover) and (pointer: fine) {
+  .toc-item:hover { color: var(--text); background: var(--surface-subtle); }
+}
+.toc-item.is-active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 30px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+.pane-tag {
+  font: 600 11px/1 var(--mono);
+  letter-spacing: .12em;
+  color: var(--text-2);
+}
+.pane-meta {
+  min-width: 0;
+  font: 400 11px/1 var(--mono);
+  letter-spacing: .04em;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.divider {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  cursor: col-resize;
+  touch-action: none;
+  border-radius: 6px;
+}
+.divider::after {
+  content: "";
+  display: block;
+  width: 2px;
+  height: 26px;
+  border-radius: 2px;
+  background: var(--line-strong);
+  transition: background-color 160ms var(--ease-out), transform 160ms var(--ease-out);
+}
+.divider:hover::after, .divider.is-dragging::after {
+  background: var(--accent);
+  transform: scaleY(1.4);
+}
+.divider.is-dragging::after { transform: scaleY(1.7); }
+.divider:focus-visible { outline-offset: -2px; }
+body.is-resizing { user-select: none; cursor: col-resize; }
+
+/* ============================================================
+   5. Editor
+   ============================================================ */
+#content {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 20px 22px 72px;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  resize: none;
+  background: var(--editor-surface);
+  color: var(--text);
+  caret-color: var(--accent);
+  font-family: var(--mono);
+  font-size: 14.5px;
+  line-height: 1.8;
+  letter-spacing: 0;
+  tab-size: 2;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: break-word;
+}
+#content::placeholder { color: var(--text-3); }
+#content:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--selection); }
+
+/* ============================================================
+   6. Markdown prose
+   ============================================================ */
+.markdown {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  /* 正文按 --prose-width 居中限宽；分屏窄栏自动退回 26px 边距 */
+  padding: 20px max(26px, calc((100% - var(--prose-width)) / 2)) 80px;
+  border: 0;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.75;
+  /* 纵向滚动只属于正文；横向一律交给各内容块自己消化，绝不让整页横滚 */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* anywhere 让长 URL / 长行内代码在任意字符处换行，不撑破正文栏 */
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+
+.markdown h1, .markdown h2, .markdown h3,
+.markdown h4, .markdown h5, .markdown h6 {
+  margin: 1.6em 0 .6em;
+  color: var(--text);
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
+.markdown h1 { font-size: clamp(1.6rem, 1.3rem + 1vw, 2rem); padding-bottom: .35em; border-bottom: 1px solid var(--line); }
+.markdown h2 { font-size: clamp(1.35rem, 1.15rem + .7vw, 1.6rem); padding-bottom: .3em; border-bottom: 1px solid var(--line); }
+.markdown h3 { font-size: 1.25rem; }
+.markdown h4 { font-size: 1.1rem; }
+.markdown h5, .markdown h6 { font-size: 1rem; color: var(--text-2); }
+
+.markdown p { margin: 0 0 1em; }
+.markdown strong { font-weight: 600; color: var(--text); }
+/* 中文禁斜体：强调只用字重 + 字色，不做成会被误认成可点击标签的胶囊 */
+.markdown em, .markdown i, .markdown cite, .markdown dfn {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--accent-text);
+}
+.markdown del, .markdown s { color: var(--text-3); text-decoration: line-through; text-decoration-thickness: 1px; }
+
+.markdown a {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line-strong);
+  transition: text-decoration-color 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .markdown a:hover { color: var(--accent); text-decoration-color: var(--accent); }
+}
+
+.markdown ul, .markdown ol { max-width: 100%; min-width: 0; margin: 0 0 1em; padding-left: 1.6em; }
+.markdown li { margin: .35em 0; }
+.markdown li::marker { color: var(--accent); font-variant-numeric: tabular-nums; }
+.markdown li > ul, .markdown li > ol { margin: .35em 0; }
+.markdown li p { margin: 0; }
+
+/* 任务列表：showdown 会写入内联 margin / list-style，这里必须覆盖 */
+.markdown input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  margin: 0 .5em 0 0 !important;
+  vertical-align: -2px !important;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  flex: none;
+}
+.markdown input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.2l3 3 6-6.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.markdown li.task-list-item { margin-left: -1.5em; }
+
+/* 引用块：整块底色 + 全边框，不用左侧竖线装饰；块内宽内容仍各自限宽 */
+.markdown blockquote {
+  max-width: 100%;
+  min-width: 0;
+  margin: 1.25em 0;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--text);
+}
+.markdown blockquote > :last-child { margin-bottom: 0; }
+
+/* 行内代码保持 inline（原样式误设为 block） */
+.markdown code {
+  display: inline;
+  padding: .12em .38em;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: .86em;
+  line-height: 1.5;
+  white-space: break-spaces;
+  overflow-wrap: anywhere;
+}
+.markdown pre {
+  max-width: 100%;
+  min-width: 0;
+  margin: 1.25em 0;
+  padding: 16px 18px;
+  border: 1px solid var(--pre-line);
+  border-radius: 8px;
+  background: var(--pre-bg);
+  color: var(--pre-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+  /* 长代码行只在代码块内部横向滚动，不带动整篇正文 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  line-height: 1.65;
+  tab-size: 2;
+}
+.markdown pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.markdown hr {
+  height: 1px;
+  margin: 2em 0;
+  border: 0;
+  background: var(--line);
+}
+
+.markdown img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.25em auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  opacity: 1;
+  box-shadow: var(--shadow-pane);
+}
+
+/* 表格默认铺满正文宽度：内容不足时列宽自动拉伸到 100%，不留下右侧空白；
+   内容确实放不下时表格按最小内容宽撑开，由外层 .table-scroll 内部横向滚动 */
+.table-scroll {
+  max-width: 100%;
+  min-width: 0;
+  margin: 1.25em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+/* 内描边，避免焦点框被正文的 overflow-x: hidden 裁掉 */
+.table-scroll:focus-visible { outline-offset: -2px; border-radius: 4px; }
+
+.markdown table {
+  width: 100%;
+  margin: 1.25em 0; /* 无容器时（如复制出去的 HTML）仍保留上下间距 */
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: .9375em;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+/* 外边距统一由容器承担（放在表格规则之后以保证覆盖） */
+.markdown .table-scroll > table { margin: 0; }
+/* 单元格允许换行以优先压缩列宽；若希望列宽完全不压缩、只靠横向滚动查看，
+   给下面规则加 white-space: nowrap 即可 */
+.markdown th, .markdown td {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  background: transparent;
+}
+.markdown thead th {
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.markdown tbody tr:nth-child(even) { background: var(--surface-subtle); }
+
+.markdown kbd {
+  display: inline-block;
+  padding: .1em .45em;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface-subtle);
+  font: 500 .82em/1.5 var(--mono);
+  color: var(--text-2);
+}
+
+/* 空态：只在没有内容时出现，并给出下一步 */
+.empty-state {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  height: 100%;
+  min-height: 160px;
+  text-align: center;
+  color: var(--text-3);
+}
+.empty-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 4px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  font: 500 18px/1 var(--mono);
+  color: var(--accent);
+}
+.empty-title { font-size: 14px; font-weight: 500; color: var(--text-2); }
+.empty-hint { font-size: 12px; line-height: 1.6; }
+
+/* ============================================================
+   7. Print — 保留原有纯文本打印路径
+   ============================================================ */
+#printable { display: none; }
+@media print {
+  body { height: auto; background: #fff; }
+  .app { display: none; }
+  #printable {
+    display: block;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: 12pt/1.6 var(--mono);
+    color: #171717;
+  }
+}
+
+/* ============================================================
+   8. Responsive — 移动端把「一半一半」解释为上下分屏
+   ============================================================ */
+@media (max-width: 900px) {
+  .topbar { padding-left: 12px; padding-right: 12px; gap: 10px; }
+  .view-btn { padding: 8px 13px; }
+  .container { padding: 10px; }
+  .markdown { padding-top: 18px; padding-bottom: 64px; }
+  #content { padding: 18px 18px 64px; }
+}
+
+@media (max-width: 767px) {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "brand actions" "switch switch";
+    gap: 9px;
+    padding: 9px 12px;
+    padding-top: max(9px, env(safe-area-inset-top));
+  }
+  .brand { grid-area: brand; }
+  .actions { grid-area: actions; }
+  .note-name { font-size: 12px; }
+  .view-switch { grid-area: switch; justify-self: stretch; }
+  .view-btn { flex: 1; padding: 11px 6px; font-size: 13px; }
+  .btn { padding: 8px 14px; }
+
+  .container {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, var(--split)) 10px minmax(0, 1fr);
+    padding: 8px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  .pane-head { height: 26px; padding: 0 12px; }
+  .divider { cursor: row-resize; }
+  /* 上下分屏用明确的抓手，避免短横线被误读成正文下划线 */
+  .divider::after { width: 36px; height: 4px; border-radius: 999px; }
+  .divider:hover::after, .divider.is-dragging::after { transform: scaleX(1.15); }
+  .divider.is-dragging::after { transform: scaleX(1.3); }
+  body.is-resizing { cursor: row-resize; }
+
+  /* 16px 防 iOS 聚焦时自动缩放 */
+  #content { padding: 14px 14px 44px; font-size: 16px; line-height: 1.75; }
+  .markdown { padding: 14px 16px 48px; font-size: 15.5px; }
+  .markdown h1 { font-size: 1.55rem; }
+  .markdown h2 { font-size: 1.3rem; }
+  .markdown pre { font-size: 12.5px; padding: 12px 14px; }
+  .markdown th, .markdown td { padding: 7px 10px; }
+
+  .message-alert { top: 112px; font-size: 12px; }
+}
+
+@media (max-width: 380px) {
+  .brand-word, .brand-slash { display: none; }
+  .brand-mark { width: 18px; height: 18px; }
+}
+
+/* ============================================================
+   9. 视图状态（放在响应式之后，保证单模式覆盖分屏网格）
+   ============================================================ */
+/* 纯预览独占整行时把正文从 42em 放宽到 52em；
+   分屏 / 编辑沿用默认 42em，移动端由简写 padding 固定 16px 边距，均不受影响 */
+body[data-view="preview"] .markdown { --prose-width: 52em; }
+
+body:not([data-view="split"]) .container {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+body[data-view="edit"] .divider,
+body[data-view="edit"] .pane-preview,
+body[data-view="preview"] .divider,
+body[data-view="preview"] .pane-editor { display: none; }
+
+/* ============================================================
+   10. Accessibility preferences
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: light) {
+  :root { --line: rgba(0, 0, 0, .28); --line-strong: rgba(0, 0, 0, .45); --text-2: rgba(0, 0, 0, .75); }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root { --line: rgba(255, 255, 255, .3); --line-strong: rgba(255, 255, 255, .5); --text-2: rgba(255, 255, 255, .8); }
+}
